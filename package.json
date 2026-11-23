@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "icon": "node scripts/make-icon.cjs && tauri icon src-tauri/icons/icon.png",
     "icon:mac": "node ./scripts/creatIcon.cjs"
   },

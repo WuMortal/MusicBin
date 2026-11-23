@@ -52,7 +52,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYzQjM4REU4MEU0NDREM0QKUldROVRVUU82STJ6WXhVNDJIOE9yNWt4TjFIbklBQmRJclRCbzJ2UlhtbmlFQTlKWkJaakZXaUYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDMEFGQkExQ0NFMzYzRjcKUldUM1krUE1vZnNLTER6OTUvc3BkODRTOCtwSVl1U0IwbWpwNEVycFp4aS9nK0daZmV0am8zUWQK",
       "endpoints": [
         "https://gh-proxy.com/https://github.com/WuMortal/MusicBin/releases/latest/download/latest.json"
       ]
