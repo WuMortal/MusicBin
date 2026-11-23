@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "音藏",
+  "version": "0.1.0",
+  "identifier": "com.wumen.musicbin",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1421",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build && npm run build:sandbox"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "音藏 · 音乐搜索与下载",
+        "width": 1040,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 540,
+        "dragDropEnabled": false,
+        "useHttpsScheme": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPCONFIG/**",
+          "$RESOURCE/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYzQjM4REU4MEU0NDREM0QKUldROVRVUU82STJ6WXhVNDJIOE9yNWt4TjFIbklBQmRJclRCbzJ2UlhtbmlFQTlKWkJaakZXaUYK",
+      "endpoints": [
+        "https://gh-proxy.com/https://github.com/WuMortal/MusicBin/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

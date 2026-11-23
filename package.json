@@ -1,0 +1,44 @@
+{
+  "name": "music-bin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:sandbox": "node scripts/build-sandbox.mjs",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "icon": "node scripts/make-icon.cjs && tauri icon src-tauri/icons/icon.png",
+    "icon:mac": "node ./scripts/creatIcon.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.0",
+    "@tauri-apps/plugin-dialog": "2.8.0",
+    "@tauri-apps/plugin-opener": "2.7.2",
+    "cheerio": "^1.2.0",
+    "crypto-js": "^4.2.0",
+    "dayjs": "^1.11.23",
+    "he": "^2.0.0",
+    "lucide-vue-next": "^1.0.0",
+    "qs": "^6.17.1",
+    "vue": "^3.4.0",
+    "vue-router": "^4.4.0"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@tauri-apps/cli": "2.12.3",
+    "@types/crypto-js": "^4.2.2",
+    "@types/he": "^1.2.3",
+    "@types/node": "^22.0.0",
+    "@types/qs": "^6.15.1",
+    "@vitejs/plugin-vue": "^5.1.0",
+    "png2icons": "^2.0.1",
+    "sharp": "^0.35.5",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vue-tsc": "^2.1.0"
+  }
+}

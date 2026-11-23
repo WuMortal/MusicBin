@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plugin Sandbox</title>
+  </head>
+  <body>
+    <!-- MusicFree 插件沙箱：宿主以 sandbox="allow-scripts" iframe 加载本页，
+         插件 JS 在此执行，网络请求全部经 postMessage 代理到宿主 Rust 侧。
+         注意：必须是经典 script（不带 type=module）——沙箱 iframe 是 opaque origin
+         （Origin: null），module 脚本需要 CORS，而 Vite dev 与 Tauri 生产协议
+         都不会为 Origin: null 返回 Access-Control-Allow-Origin，module 会被拦截；
+         经典 script 不走 CORS。/sandbox.js 由 esbuild 打成单文件 IIFE
+         （cheerio 等依赖全部内联），dev 由 vite 中间件按需构建，生产由
+         scripts/build-sandbox.mjs 写入 dist。 -->
+    <script src="/sandbox.js"></script>
+  </body>
+</html>
