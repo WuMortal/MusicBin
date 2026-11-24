@@ -16,4 +16,8 @@ export interface MusicSource {
   getPlayUrl(track: Track): Promise<SourcePlayUrl>
   getTrackMeta?(track: Track): Promise<TrackMeta | null>
   download(track: Track, dir: string): Promise<DownloadResult>
+  /** 探测分 P 数：>1 表示多 P 合集（仅插件源按需实现） */
+  probeParts?(track: Track): Promise<number>
+  /** 拉取多 P 合集的全部分 P，供下载前选择 */
+  getParts?(track: Track): Promise<Track[]>
 }

@@ -172,4 +172,16 @@ export function downloadTrack(track: Track, dir: string): Promise<DownloadResult
   return resolveSource(track.source).download(track, dir)
 }
 
+/** 探测分 P 数；源不支持时返回 0 */
+export async function probeTrackParts(track: Track): Promise<number> {
+  const s = resolveSource(track.source)
+  return s.probeParts ? s.probeParts(track) : 0
+}
+
+/** 拉取多 P 合集的全部分 P；非多 P 返回空数组 */
+export async function getTrackParts(track: Track): Promise<Track[]> {
+  const s = resolveSource(track.source)
+  return s.getParts ? s.getParts(track) : []
+}
+
 export { defaultDownloadDir } from '../settings'

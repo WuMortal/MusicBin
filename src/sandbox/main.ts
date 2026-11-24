@@ -269,7 +269,8 @@ async function onInit(d: HostMessage) {
   }
 }
 
-const ALLOWED_METHODS = ['search', 'getMediaSource', 'getMusicInfo', 'getLyric']
+// getAlbumInfo：bilibili 等插件的多 P 合集信息（分 P 探测与分 P 选择下载依赖它）
+const ALLOWED_METHODS = ['search', 'getMediaSource', 'getMusicInfo', 'getLyric', 'getAlbumInfo']
 
 async function onCall(d: HostMessage) {
   const msgId = d.msgId as number

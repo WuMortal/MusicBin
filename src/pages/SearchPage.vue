@@ -8,6 +8,7 @@ import {
 } from 'lucide-vue-next'
 import {
   searchMusic, guessMusics, getPlaybackUrl, coverAsDataUrl, downloadTrack, getTrackMeta,
+  probeTrackParts, getTrackParts,
 } from '../lib/musicApi'
 import {
   ensureDownloadDir, setDownloadDir, getDownloadDir, addHistory,
@@ -16,6 +17,7 @@ import {
 import { useToast } from '../composables/toast'
 import { confirm } from '../composables/confirm'
 import EmptyState from '../components/EmptyState.vue'
+import PartsDialog from '../components/PartsDialog.vue'
 import type { Track, PlayRecord } from '../types'
 
 const toast = useToast()
@@ -159,12 +161,38 @@ async function runSearch() {
     tracks.value = list
     if (!list.length) {
       suggestions.value = await guessMusics(kw).catch(() => [])
+    } else {
+      // 分 P 探测放后台，不阻塞搜索结果展示
+      void probePartsOfList(list)
     }
   } catch (e) {
     toast.error('搜索失败：' + ((e as Error).message || e))
   } finally {
     searching.value = false
   }
+}
+
+/**
+ * 后台探测搜索结果的分 P 数（仅 bilibili 视频类条目会真正发请求），
+ * 命中多 P 后给条目打上 partCount 以展示标识。并发 3，避免触发接口限流。
+ */
+async function probePartsOfList(list: Track[]) {
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < list.length) {
+      const t = list[cursor++]
+      try {
+        const n = await probeTrackParts(t)
+        if (n <= 1) continue
+        // 必须走 tracks.value 的代理赋值才会触发视图更新（直接改 list 里的裸对象不会）
+        const idx = tracks.value.findIndex(x => x.id === t.id)
+        if (idx >= 0) tracks.value[idx] = { ...tracks.value[idx], partCount: n }
+      } catch {
+        /* 探测失败按普通单曲处理 */
+      }
+    }
+  }
+  await Promise.all([worker(), worker(), worker()])
 }
 
 function fillKw(word: string) {
@@ -278,33 +306,105 @@ async function clearRecent() {
   duration.value = 0
 }
 
+/** 分 P 选择弹框状态（Promise 形式，便于下载流程 await） */
+const partsState = reactive<{ visible: boolean; title: string; parts: Track[] }>({
+  visible: false, title: '', parts: [],
+})
+let partsResolver: ((picked: Track[]) => void) | null = null
+
+function pickParts(track: Track, parts: Track[]): Promise<Track[]> {
+  partsState.title = track.title
+  partsState.parts = parts
+  partsState.visible = true
+  return new Promise((resolve) => {
+    partsResolver = resolve
+  })
+}
+
+function onPartsConfirm(picked: Track[]) {
+  partsState.visible = false
+  partsResolver?.(picked)
+  partsResolver = null
+}
+
+function onPartsVisible(v: boolean) {
+  if (v) return
+  partsState.visible = false
+  partsResolver?.([])
+  partsResolver = null
+}
+
 async function download(track: Track) {
-  if (loadingIds.has(track.id)) return
+  if (loadingIds.has(track.id) || partsState.visible) return
   let dir = downloadDir.value || await ensureDownloadDir()
   if (!dir) {
     await pickDir()
     dir = downloadDir.value
   }
   if (!dir) return
+
+  // 多 P 合集：先拉分 P 列表让用户勾选，再按序下载
+  let targets: Track[] = [track]
+  if ((track.partCount || 0) > 1) {
+    loadingIds.add(track.id)
+    let parts: Track[] = []
+    try {
+      parts = await getTrackParts(track)
+    } catch {
+      /* 拉分 P 失败就按单曲下载 */
+    } finally {
+      loadingIds.delete(track.id)
+    }
+    if (parts.length > 1) {
+      const picked = await pickParts(track, parts)
+      if (!picked.length) return
+      targets = picked
+    }
+  }
+
   const fileBase = `${track.title} - ${track.author}`.trim()
   loadingIds.add(track.id)
   progress[fileBase] = { downloaded: 0, total: 0 }
   try {
-    toast.info('正在获取音源并写入封面与歌词…', 1600)
-    const saved = await downloadTrack(track, dir)
-    addHistory({
-      key: `${track.id}-${Date.now()}`,
-      title: track.title,
-      author: track.author,
-      path: saved.path,
-      size: saved.size,
-      time: new Date().toLocaleString('zh-CN', { hour12: false }),
-    })
-    toast.success(`已下载：${fileBase}`)
+    if (targets.length === 1) {
+      toast.info('正在获取音源并写入封面与歌词…', 1600)
+      const saved = await downloadTrack(targets[0], dir)
+      addHistory({
+        key: `${targets[0].id}-${Date.now()}`,
+        title: targets[0].title,
+        author: targets[0].author,
+        path: saved.path,
+        size: saved.size,
+        time: new Date().toLocaleString('zh-CN', { hour12: false }),
+      })
+      toast.success(`已下载：${fileBase}`)
+    } else {
+      let ok = 0
+      for (let i = 0; i < targets.length; i++) {
+        progress[fileBase] = { downloaded: i, total: targets.length }
+        try {
+          const saved = await downloadTrack(targets[i], dir)
+          addHistory({
+            key: `${targets[i].id}-${Date.now()}`,
+            title: targets[i].title,
+            author: targets[i].author,
+            path: saved.path,
+            size: saved.size,
+            time: new Date().toLocaleString('zh-CN', { hour12: false }),
+          })
+          ok++
+        } catch {
+          /* 单个分 P 失败不影响其余，最后统一汇报 */
+        }
+        progress[fileBase] = { downloaded: i + 1, total: targets.length }
+      }
+      if (ok === targets.length) toast.success(`合集下载完成：共 ${ok} 首`)
+      else toast.error(`合集下载完成：成功 ${ok}/${targets.length} 首`)
+    }
   } catch (e) {
     toast.error((e as Error).message || '下载失败')
-    delete progress[fileBase]
   } finally {
+    delete progress[fileBase]
     loadingIds.delete(track.id)
   }
 }
@@ -418,6 +518,10 @@ function pct(key: string): number {
               </button>
             </div>
             <div class="track-bottom">
+              <span v-if="(t.partCount || 0) > 1" class="parts-badge"
+                :title="`该合集共 ${t.partCount} 个分 P，下载时可选择`">
+                <ListMusic :size="11" />{{ t.partCount }}P
+              </span>
               <button class="btn btn-sm dl-btn" :disabled="loadingIds.has(t.id)" @click="download(t)">
                 <LoaderCircle v-if="loadingIds.has(t.id)" :size="14" class="spin" />
                 <Download v-else :size="14" />
@@ -559,6 +663,9 @@ function pct(key: string): number {
          audio 引用拿不到，试听会静默失效 -->
     <audio ref="audio" preload="metadata" @timeupdate="onTimeUpdate" @loadedmetadata="onTimeUpdate" @ended="onEnded"
       @play="isPlaying = true" @pause="isPlaying = false" />
+
+    <PartsDialog :visible="partsState.visible" :title="partsState.title" :parts="partsState.parts"
+      @update:visible="onPartsVisible" @confirm="onPartsConfirm" />
   </div>
 </template>
 
@@ -756,6 +863,23 @@ function pct(key: string): number {
 
 .dl-btn {
   flex-shrink: 0;
+}
+
+/* 多 P 合集标识：与下载按钮同排，弱化处理但一眼可辨 */
+.parts-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-primary);
+  background: var(--c-primary-soft);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .mini-prog {

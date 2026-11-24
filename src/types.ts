@@ -5,6 +5,8 @@ export interface Track {
   source: string
   /** 封面（插件源搜索结果里的 artwork，仅用于展示，取元信息时可能被覆盖） */
   cover?: string
+  /** 分 P 数：>1 表示多 P 合集（如 bilibili 多 P 视频），用于展示标识与下载前选择 */
+  partCount?: number
 }
 
 export interface PlayResult {

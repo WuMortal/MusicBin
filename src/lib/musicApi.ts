@@ -2,4 +2,5 @@
 // 实际路由在 ./source；保持既有 import 路径不变。
 export {
   searchMusic, guessMusics, getPlayUrl, getPlaybackUrl, coverAsDataUrl, getTrackMeta, downloadTrack, defaultDownloadDir,
+  probeTrackParts, getTrackParts,
 } from './source'
