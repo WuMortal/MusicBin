@@ -19,6 +19,11 @@ interface PluginSearchResult { isEnd?: boolean; data?: MusicItemLike[] }
 interface MusicInfoResult { title?: string; artist?: string; album?: string; artwork?: string }
 interface LyricResult { rawLrc?: string }
 
+/** bilibili 封面常返回 http://，WebView/WKWebView 会按不安全资源拦截，统一升级为 https */
+function httpsUrl(url: string | undefined): string {
+  return (url || '').replace(/^http:\/\//i, 'https://')
+}
+
 /**
  * 插件音源：包装一个 PluginHost 沙箱实例。
  * search 缓存原始 musicItem（getMediaSource 需要完整字段而不只是 id），
@@ -49,6 +54,7 @@ export class PluginSource implements MusicSource {
       title: String(it.title ?? '未知歌曲'),
       author: String(it.artist ?? it.author ?? ''),
       source: this.code,
+      cover: it.artwork ? httpsUrl(String(it.artwork)) : undefined,
     }))
   }
 
@@ -77,7 +83,8 @@ export class PluginSource implements MusicSource {
       return {
         title: info?.title || track.title,
         author: info?.artist || track.author,
-        cover: info?.artwork || '',
+        // 有的插件（如 bilibili）没有 getMusicInfo/封面，但搜索结果自带 artwork
+        cover: httpsUrl(info?.artwork || this.itemFor(track).artwork || track.cover),
         lrc: lrc?.rawLrc || '',
       }
     } catch {
@@ -98,7 +105,7 @@ export class PluginSource implements MusicSource {
       dir,
       title,
       author,
-      coverUrl: meta?.cover || '',
+      coverUrl: meta?.cover || track.cover || '',
       lrc: meta?.lrc || '',
       headers: src.headers,
     })

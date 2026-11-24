@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["fs", "io-util"] }
 futures-util = "0.3"
 id3 = "1"
 base64 = "0.22"
+lofty = "0.22"
 
 [profile.release]
 panic = "abort"

@@ -7,7 +7,7 @@ import {
   SkipBack, SkipForward, Volume2, VolumeX, ListMusic, Trash2, X,
 } from 'lucide-vue-next'
 import {
-  searchMusic, guessMusics, getPlayUrl, downloadTrack, getTrackMeta,
+  searchMusic, guessMusics, getPlaybackUrl, coverAsDataUrl, downloadTrack, getTrackMeta,
 } from '../lib/musicApi'
 import {
   ensureDownloadDir, setDownloadDir, getDownloadDir, addHistory,
@@ -107,6 +107,8 @@ const canNext = computed(() => queueIndex.value >= 0 && queueIndex.value < queue
 
 let unlisten: UnlistenFn | null = null
 let searchTimer: ReturnType<typeof setTimeout> | undefined
+/** 当前播放的 Blob URL 释放函数（插件直链转 Blob 后需手动回收） */
+let playBlobRevoke: (() => void) | null = null
 
 const quickWords = ['周杰伦', '驿动的心', '晴天']
 
@@ -122,7 +124,7 @@ onMounted(async () => {
   unlisten = await listen<{ file: string; downloaded: number; total: number; done?: boolean }>(
     'download-progress',
     (e) => {
-      const name = e.payload.file.replace(/\.mp3$/i, '')
+      const name = e.payload.file.replace(/\.(mp3|m4a|mp4|flac|aac|ogg|wav)$/i, '')
       progress[name] = {
         downloaded: e.payload.downloaded,
         total: e.payload.total,
@@ -136,6 +138,8 @@ onBeforeUnmount(() => {
   unlisten?.()
   clearTimeout(searchTimer)
   audio.value?.pause()
+  playBlobRevoke?.()
+  playBlobRevoke = null
 })
 
 function scheduleSearch() {
@@ -180,17 +184,28 @@ async function togglePlay(track: Track) {
   try {
     // 直链与封面/歌词并行取；元数据失败不影响试听
     const [result, meta] = await Promise.all([
-      getPlayUrl(track),
+      getPlaybackUrl(track),
       getTrackMeta(track).catch(() => null),
     ])
     playingId.value = track.id
     playingTitle.value = track.title
     playingAuthor.value = track.author || meta?.author || ''
     playingSource.value = track.source || 'gequbao'
-    coverUrl.value = meta?.cover || ''
+    // 不能先把远程地址挂到 <img> 上：那样页面会立刻发起一次直连（bilibili 403）。
+    // 先留空占位，等 Rust 拉完转成 data URL 再一次性赋值。
+    const coverSrc = meta?.cover || track.cover || ''
+    coverUrl.value = ''
+    if (coverSrc) {
+      void coverAsDataUrl(coverSrc).then((dataUrl) => {
+        if (dataUrl && playingId.value === track.id) coverUrl.value = dataUrl
+      })
+    }
     lyrics.value = meta?.lrc ? parseLrc(meta.lrc) : []
     openPanel.value = ''
+    const prevRevoke = playBlobRevoke
+    playBlobRevoke = result.revoke ?? null
     el.src = result.url
+    prevRevoke?.()
     await el.play()
     isPlaying.value = true
     addPlayRecord({
@@ -249,6 +264,8 @@ async function clearRecent() {
   el?.pause()
   el?.removeAttribute('src')
   el?.load()
+  playBlobRevoke?.()
+  playBlobRevoke = null
   playingId.value = null
   playingTitle.value = ''
   playingAuthor.value = ''

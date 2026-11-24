@@ -3,6 +3,8 @@ export interface Track {
   title: string
   author: string
   source: string
+  /** 封面（插件源搜索结果里的 artwork，仅用于展示，取元信息时可能被覆盖） */
+  cover?: string
 }
 
 export interface PlayResult {

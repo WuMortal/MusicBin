@@ -323,6 +323,59 @@ fn safe_file_name(name: &str) -> String {
     }
 }
 
+/// 直链后缀 → 扩展名；m4s 是 bilibili 的 DASH 音频分段，统一存成 m4a
+fn ext_from_url(url: &str) -> &'static str {
+    let ext = url::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            std::path::Path::new(u.path())
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+        })
+        .unwrap_or_default();
+    match ext.as_str() {
+        "mp3" => "mp3",
+        "m4s" | "m4a" => "m4a",
+        "mp4" => "mp4",
+        "flac" => "flac",
+        "aac" => "aac",
+        "ogg" | "opus" => "ogg",
+        "wav" => "wav",
+        _ => "mp3",
+    }
+}
+
+/// 按文件头魔数判定真实音频容器（识别失败返回 None，保留原后缀）
+fn sniff_audio_ext(path: &std::path::Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut head = [0u8; 12];
+    let mut f = std::fs::File::open(path).ok()?;
+    let n = f.read(&mut head).ok()?;
+    if n < 4 {
+        return None;
+    }
+    if &head[0..3] == b"ID3" {
+        return Some("mp3");
+    }
+    if head[0] == 0xFF && (head[1] & 0xE0) == 0xE0 {
+        return Some("mp3"); // MPEG 帧同步头
+    }
+    if n >= 8 && &head[4..8] == b"ftyp" {
+        return Some("m4a"); // MP4 / M4A / M4S
+    }
+    if &head[0..4] == b"fLaC" {
+        return Some("flac");
+    }
+    if &head[0..4] == b"OggS" {
+        return Some("ogg");
+    }
+    if &head[0..4] == b"RIFF" {
+        return Some("wav");
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn default_download_dir(app: AppHandle) -> Result<String, String> {
     let dir = app
@@ -349,8 +402,8 @@ pub(crate) async fn download_stream(
     tokio::fs::create_dir_all(&target_dir)
         .await
         .map_err(|e| format!("创建下载目录失败: {}", e))?;
-    let file = format!("{}.mp3", safe_file_name(file_base));
-    let full = target_dir.join(&file);
+    let mut file = format!("{}.{}", safe_file_name(file_base), ext_from_url(url));
+    let mut full = target_dir.join(&file);
 
     let mut req = cli.get(url);
     if let Some(hs) = headers {
@@ -394,6 +447,26 @@ pub(crate) async fn download_stream(
     out.flush()
         .await
         .map_err(|e| format!("刷新文件失败: {}", e))?;
+
+    // 直链后缀不可信（bilibili 的 .m4s 实际是 fMP4 音频）：按文件头纠正扩展名，
+    // 否则后缀与容器不符，播放器打不开，后续写 ID3 还会破坏文件。
+    if let Some(real_ext) = sniff_audio_ext(&full) {
+        let cur_ext = full
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !cur_ext.eq_ignore_ascii_case(real_ext) {
+            let renamed = full.with_extension(real_ext);
+            if tokio::fs::rename(&full, &renamed).await.is_ok() {
+                full = renamed;
+                file = full
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(file);
+            }
+        }
+    }
+
     let _ = app.emit(
         "download-progress",
         serde_json::json!({ "file": file, "downloaded": downloaded, "total": total, "done": true }),
@@ -612,6 +685,73 @@ pub async fn download_track_with_meta(
     Ok(saved)
 }
 
+/// 校验字节是否像图片（JPEG/PNG/WebP/GIF/BMP/ICO）。
+/// 图床防盗链命中时返回 403 + HTML 错误页（Tengine），不校验就会把错误页当封面嵌进文件。
+fn looks_like_image(b: &[u8]) -> bool {
+    b.len() > 16
+        && (b.starts_with(&[0xFF, 0xD8, 0xFF]) // JPEG
+            || b.starts_with(&[0x89, 0x50, 0x4E, 0x47]) // PNG
+            || (b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP")
+            || b.starts_with(b"GIF8") // GIF
+            || b.starts_with(b"BM") // BMP
+            || b.starts_with(&[0x00, 0x00, 0x01, 0x00])) // ICO
+}
+
+/// 拉封面：HTTP 200 且内容确实是图片字节才返回，否则返回 None。
+/// 图床（hdslb 等）会按 Referer 拦截，采用多策略重试规避防盗链。
+async fn fetch_cover(
+    cli: &reqwest::Client,
+    url: &str,
+    headers: Option<&std::collections::HashMap<String, String>>,
+) -> Option<(String, Vec<u8>)> {
+    async fn try_once(
+        cli: &reqwest::Client,
+        url: &str,
+        headers: Option<&std::collections::HashMap<String, String>>,
+    ) -> Option<(String, Vec<u8>)> {
+        let mut req = cli.get(url);
+        if let Some(hs) = headers {
+            for (k, v) in hs {
+                req = req.header(k.as_str(), v.as_str());
+            }
+        }
+        let resp = req.send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let mime = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .split(';')
+            .next()
+            .unwrap_or("image/jpeg")
+            .to_string();
+        let b = resp.bytes().await.ok()?.to_vec();
+        if !looks_like_image(&b) {
+            return None;
+        }
+        Some((mime, b))
+    }
+
+    // 1) 调用方给的防盗链头（插件源为媒体源 headers，内置源为 None）
+    if let Some(r) = try_once(cli, url, headers).await {
+        return Some(r);
+    }
+    // 2) bilibili 等图床：带站点 Referer 重试（媒体源 headers 里的 Referer 常被图床拒绝）
+    let mut site = std::collections::HashMap::<String, String>::new();
+    site.insert("Referer".to_string(), "https://www.bilibili.com/".to_string());
+    if let Some(r) = try_once(cli, url, Some(&site)).await {
+        return Some(r);
+    }
+    // 3) 不带任何额外头直连（等价浏览器地址栏直接打开图片）
+    if let Some(r) = try_once(cli, url, None).await {
+        return Some(r);
+    }
+    None
+}
+
 /// 下载封面 → 嵌入 ID3v2.3 → 写同名 .lrc（UTF-8 BOM）。
 /// 内置源与插件源共用；插件源通过 headers 传防盗链头（Referer/Cookie）。
 pub(crate) async fn finish_download(
@@ -628,43 +768,38 @@ pub(crate) async fn finish_download(
     let cover = if cover_url.is_empty() {
         None
     } else {
-        let mut req = cli.get(cover_url);
-        if let Some(hs) = headers {
-            for (k, v) in hs {
-                req = req.header(k.as_str(), v.as_str());
-            }
-        }
-        match req.send().await {
-            Ok(resp) => {
-                let mime = resp
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("image/jpeg")
-                    .split(';')
-                    .next()
-                    .unwrap_or("image/jpeg")
-                    .to_string();
-                match resp.bytes().await {
-                    Ok(b) => Some((mime, b.to_vec())),
-                    Err(_) => None,
-                }
-            }
-            Err(_) => None,
-        }
+        fetch_cover(cli, cover_url, headers).await
     };
 
-    let mp3_path = std::path::PathBuf::from(path);
+    let audio_path = std::path::PathBuf::from(path);
     let _ = app.emit(
         "download-progress",
         serde_json::json!({ "file": file_base, "downloaded": 0, "total": 0, "embeding": true }),
     );
-    embed_id3(&mp3_path, title, author, cover, lrc)?;
+    // ID3v2 只属于 MP3 容器：给 m4a/flac/ogg 写 ID3 会把文件头写坏（下载后无法打开）。
+    let ext = audio_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_mp3 = ext == "mp3";
+    let is_mp4_container = ext == "m4a" || ext == "mp4";
+    if is_mp3 {
+        embed_id3(&audio_path, title, author, cover, lrc)?;
+    } else if is_mp4_container {
+        // m4a/mp4 走标准 ilst（covr）写封面；fMP4 写失败时自动回滚，退回同名图片
+        if !try_embed_mp4_tags(&audio_path, title, author, cover.as_ref())? {
+            write_sidecar_cover(&audio_path, cover.as_ref())?;
+        }
+    } else {
+        // flac/ogg 等暂不内嵌，先落同名图片
+        write_sidecar_cover(&audio_path, cover.as_ref())?;
+    }
 
     // USLT 内嵌歌词在 Windows 上几乎不可见（Explorer / WMP / 多数国产播放器都不读），
     // 同名 .lrc 是同步歌词的通用载体，洛雪 / foobar2000 / 手机播放器均支持。
     if !lrc.trim().is_empty() {
-        let lrc_path = mp3_path.with_extension("lrc");
+        let lrc_path = audio_path.with_extension("lrc");
         let mut content: Vec<u8> = Vec::with_capacity(lrc.len() + 3);
         content.extend_from_slice("\u{FEFF}".as_bytes()); // UTF-8 BOM，防止被当作 ANSI 乱码
         content.extend_from_slice(lrc.as_bytes());
@@ -672,4 +807,102 @@ pub(crate) async fn finish_download(
             .map_err(|e| format!("写入歌词文件失败: {}", e))?;
     }
     Ok(())
+}
+
+/// 封面落成与音频同名的图片（容器不便内嵌时的兜底）
+fn write_sidecar_cover(
+    audio_path: &std::path::Path,
+    cover: Option<&(String, Vec<u8>)>,
+) -> Result<(), String> {
+    let Some((mime, bytes)) = cover else {
+        return Ok(());
+    };
+    let ext = if normalize_image_mime(bytes, mime).contains("png") {
+        "png"
+    } else {
+        "jpg"
+    };
+    std::fs::write(audio_path.with_extension(ext), bytes)
+        .map_err(|e| format!("写入封面文件失败: {}", e))
+}
+
+fn count_atom(data: &[u8], atom: &[u8; 4]) -> usize {
+    data.windows(4).filter(|w| *w == &atom[..]).count()
+}
+
+/// m4a/mp4：用 lofty 写 ilst 的 title/artist/covr（MP4 的封面在 `covr`，不是 ID3 APIC）。
+/// 先写临时副本并校验关键 atom（fMP4 的 moof/mdat 不能被吞掉），校验通过才替换原文件；
+/// 任何一步失败都保持原文件不动并返回 false，由调用方退回同名图片。
+fn try_embed_mp4_tags(
+    audio_path: &std::path::Path,
+    title: &str,
+    author: &str,
+    cover: Option<&(String, Vec<u8>)>,
+) -> Result<bool, String> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::picture::{MimeType, Picture, PictureType};
+    use lofty::prelude::{Accessor, TagExt};
+    use lofty::tag::{Tag, TagType};
+
+    let orig = std::fs::read(audio_path).map_err(|e| format!("读取音频失败: {}", e))?;
+    // 临时文件保留原扩展名，lofty 才能按 MP4 解析
+    let file_ext = audio_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("m4a");
+    let stem = audio_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tmp".to_string());
+    let tmp = audio_path.with_file_name(format!("{}.tagtmp.{}", stem, file_ext));
+    std::fs::copy(audio_path, &tmp).map_err(|e| format!("创建临时文件失败: {}", e))?;
+
+    let written = (|| -> Result<(), String> {
+        let mut tagged = lofty::read_from_path(&tmp)
+            .map_err(|e| format!("解析 MP4 文件失败: {}", e))?;
+        if tagged.primary_tag().is_none() {
+            tagged.insert_tag(Tag::new(TagType::Mp4Ilst));
+        }
+        let tag = tagged
+            .primary_tag_mut()
+            .ok_or_else(|| "无法创建 MP4 标签".to_string())?;
+        tag.set_title(title.to_string());
+        tag.set_artist(author.to_string());
+        if let Some((mime, bytes)) = cover {
+            let mime = if normalize_image_mime(bytes, mime).contains("png") {
+                MimeType::Png
+            } else {
+                MimeType::Jpeg
+            };
+            tag.push_picture(Picture::new_unchecked(
+                PictureType::CoverFront,
+                Some(mime),
+                None,
+                bytes.clone(),
+            ));
+        }
+        tag.save_to_path(&tmp, WriteOptions::default())
+            .map_err(|e| format!("写入 MP4 标签失败: {}", e))
+    })();
+
+    let intact = written.is_ok()
+        && match std::fs::read(&tmp) {
+            Ok(new) => {
+                new.get(4..8) == Some(&b"ftyp"[..])
+                    && count_atom(&new, b"moof") >= count_atom(&orig, b"moof")
+                    && count_atom(&new, b"mdat") >= count_atom(&orig, b"mdat")
+                    && new.len() + 2048 >= orig.len()
+            }
+            Err(_) => false,
+        };
+
+    if intact {
+        let _ = std::fs::remove_file(audio_path);
+        std::fs::rename(&tmp, audio_path).map_err(|e| format!("替换音频失败: {}", e))?;
+        Ok(true)
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+        Ok(false)
+    }
 }

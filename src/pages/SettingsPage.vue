@@ -210,7 +210,7 @@ function onMarketInstalled(record: PluginRecord) {
 
     <section class="card sec">
       <h2>下载目录</h2>
-      <p class="desc">下载的单曲会保存到该目录，文件名格式为「歌曲名 - 歌手.mp3」。</p>
+      <p class="desc">下载的单曲会保存到该目录，文件名格式为「歌曲名 - 歌手.扩展名」（多为 .mp3，插件源可能是 .m4a/.flac）。</p>
       <div class="row">
         <div class="path">{{ dir || '未设置（首次下载时选择）' }}</div>
         <button class="btn btn-ghost" @click="pickDir"><FolderOpen :size="14" /> 选择目录</button>
