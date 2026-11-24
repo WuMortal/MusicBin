@@ -200,7 +200,7 @@ function fillKw(word: string) {
   void runSearch()
 }
 
-async function togglePlay(track: Track) {
+async function togglePlay(track: Track, quiet = false) {
   const el = audio.value
   if (!el) return
   if (playingId.value === track.id) {
@@ -208,7 +208,7 @@ async function togglePlay(track: Track) {
     else { el.pause(); isPlaying.value = false }
     return
   }
-  toast.info('正在获取播放链接…', 1600)
+  if (!quiet) toast.info('正在获取播放链接…', 1600)
   try {
     // 直链与封面/歌词并行取；元数据失败不影响试听
     const [result, meta] = await Promise.all([
@@ -249,18 +249,54 @@ async function togglePlay(track: Track) {
   }
 }
 
-/** 从列表试听：同时建立播放队列，供上一首/下一首切换 */
-function playFromList(track: Track, list: Track[]) {
+/**
+ * 从列表试听：同时建立播放队列，供上一首/下一首切换。
+ * 多 P 合集会把全部分 P 展开进队列，播放顺序为 P1、P2…，播完才轮到下一个搜索结果。
+ */
+async function playFromList(track: Track, list: Track[]) {
+  // 正在播放该合集的分 P 时，点击原卡片等同暂停/继续
+  if (playingId.value && playingId.value !== track.id && playingId.value.startsWith(`${track.id}:`)) {
+    const el = audio.value
+    if (!el) return
+    if (el.paused) { await el.play(); isPlaying.value = true }
+    else { el.pause(); isPlaying.value = false }
+    return
+  }
+
+  if ((track.partCount || 0) > 1) {
+    try {
+      const parts = await getTrackParts(track)
+      if (parts.length > 1) {
+        // 用分 P 替换该条目在原队列中的位置，前后曲目保持原顺序
+        const i = list.findIndex(x => x.id === track.id)
+        queue.value = i >= 0
+          ? [...list.slice(0, i), ...parts, ...list.slice(i + 1)]
+          : parts
+        void togglePlay(parts[0])
+        return
+      }
+    } catch {
+      /* 拉分 P 失败就按单曲播放 */
+    }
+  }
+
   queue.value = list
   void togglePlay(track)
 }
 
-/** 上一首 / 下一首 */
-function playStep(step: number) {
+/** 当前播放的是否就是列表里的这首（多 P 卡片匹配它的任一分 P） */
+function isCurrent(track: Track): boolean {
+  const id = playingId.value
+  if (!id) return false
+  return id === track.id || id.startsWith(`${track.id}:`)
+}
+
+/** 上一首 / 下一首；quiet 用于自动续播，避免每首都弹提示 */
+function playStep(step: number, quiet = false) {
   const i = queueIndex.value
   const next = queue.value[i + step]
   if (i < 0 || !next) return
-  void togglePlay(next)
+  void togglePlay(next, quiet)
 }
 
 watch(volume, (v) => {
@@ -443,7 +479,12 @@ function onTimeUpdate() {
   duration.value = Number.isFinite(audio.value.duration) ? audio.value.duration : 0
 }
 
-function onEnded() { isPlaying.value = false; currentTime.value = 0 }
+function onEnded() {
+  isPlaying.value = false
+  currentTime.value = 0
+  // 队列里还有下一首就自动续播（多 P 合集因此会一 P 接一 P 播下去）
+  if (canNext.value) playStep(1, true)
+}
 
 function fmtTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00'
@@ -504,16 +545,16 @@ function pct(key: string): number {
 
       <template v-else-if="tracks.length">
         <div class="grid">
-          <article v-for="(t, i) in tracks" :key="t.id" class="track" :class="{ playing: playingId === t.id }">
+          <article v-for="(t, i) in tracks" :key="t.id" class="track" :class="{ playing: isCurrent(t) }">
             <div class="track-top">
               <span class="rank">{{ String(i + 1).padStart(2, '0') }}</span>
               <div class="meta">
                 <h3 :title="t.title">{{ t.title }}</h3>
                 <p :title="t.author">{{ t.author || '未知歌手' }}</p>
               </div>
-              <button class="play-btn" :title="playingId === t.id && isPlaying ? '暂停' : '试听'"
+              <button class="play-btn" :title="isCurrent(t) && isPlaying ? '暂停' : '试听'"
                 @click="playFromList(t, tracks)">
-                <Pause v-if="playingId === t.id && isPlaying" :size="16" />
+                <Pause v-if="isCurrent(t) && isPlaying" :size="16" />
                 <Play v-else :size="16" />
               </button>
             </div>
